@@ -252,7 +252,7 @@ func TestGetCoord(t *testing.T) {
 	for _, tt := range tests {
 		testname := fmt.Sprintf("%v", tt.c)
 		t.Run(testname, func(t *testing.T) {
-			p, isOccupied := g.GetCoord(tt.c.AsCartesianCoord())
+			p, isOccupied := GetCoord(tt.c.AsCartesianCoord(), g.board)
 			if tt.wantIsOccupied != isOccupied {
 				t.Fatalf("isOccupied got %v, want %v", isOccupied, tt.wantIsOccupied)
 			}
@@ -444,7 +444,7 @@ func TestPawnMoves (t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			validMoves := tt.g.computeValidMovesForPawn(tt.p)
+			validMoves := computeValidMovesForPawn(tt.p, tt.g.board, tt.g.moves)
 			if !slices.Equal(tt.wantMoves, validMoves) {
 				t.Errorf("moves got %+v, want %+v", validMoves, tt.wantMoves)
 			}

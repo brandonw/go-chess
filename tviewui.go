@@ -17,6 +17,8 @@ type State struct {
 	squares [][]*tview.TextView
 	currentPlayer *tview.TextView
 	currentPlayerStatus *tview.TextView
+	history *tview.TextView
+	redStatusColor tcell.Color
 	greenBbgColor tcell.Color
 	beigeBgColor tcell.Color
 	whitePieceColor tcell.Color
@@ -38,7 +40,7 @@ func UpdateBoardUi (state *State) {
 			}
 			square.SetBackgroundColor(bgColor)
 
-			p, occupied := state.game.GetCoord(CartesianCoord{x, y})
+			p, occupied := GetCoord(CartesianCoord{x, y}, state.game.board)
 			if occupied {
 				color := state.blackPieceColor
 				if p.color == White {
@@ -87,7 +89,7 @@ func MoveChecker (textToCheck string, lastChar rune, state *State) bool {
 		pos := c.AsCartesianCoord()
 		// Check if the position has a piece owned by current player
 		var occupied bool
-		p, occupied = state.game.GetCoord(pos)
+		p, occupied = GetCoord(pos, state.game.board)
 		if !occupied || p.color != state.game.currentPlayer {
 			return false
 		}
@@ -142,7 +144,7 @@ func GridStateUpdater (text string, state *State) {
 	if len(text) >= 2 && len(text) < 4 {
 		// we need valid moves if only the target piece was selected, or if the first part of the destination was
 		// selected
-		p, _ := state.game.GetCoord(cc1)
+		p, _ := GetCoord(cc1, state.game.board)
 		validMoves = state.game.GetValidMovesForPiece(p)
 	}
 	if len(text) == 3 {
@@ -210,11 +212,11 @@ func ProcessMove(key tcell.Key, inputField *tview.InputField, state *State) {
 		}
 
 		pcc, dcc := p.AsCartesianCoord(), d.AsCartesianCoord()
-		piece, hasPiece := state.game.GetCoord(pcc)
+		piece, hasPiece := GetCoord(pcc, state.game.board)
 		if !hasPiece {
 			state.logger.Panicf("unexpected entered starting coord with no piece %v", text)
 		}
-		
+
 		moves, found := state.game.validMoves[piece]
 		if !found {
 			state.logger.Panicf("unexpected piece chosen with no valid moves %v", text)
@@ -234,7 +236,12 @@ func ProcessMove(key tcell.Key, inputField *tview.InputField, state *State) {
 		}
 
 		state.logger.Printf("Found matching move, executing state change %+v", chosenMove)
-		state.game.ExecuteValidMove(chosenMove)
+		moveText, _ := state.game.ExecuteValidMove(chosenMove)
+		_, err := state.history.Write([]byte(moveText + "\n"))
+		if err != nil {
+			state.logger.Printf("Failed to write text to history %v", err)
+		}
+
 		inputField.SetText("")
 		UpdateBoardUi(state)
 	}
@@ -274,6 +281,7 @@ func Start(game *Game) {
 	squares := make([][]*tview.TextView, 8)
 	currentPlayer := tview.NewTextView()
 	currentPlayerStatus := tview.NewTextView()
+	history := tview.NewTextView()
 
 	state := State{
 		app: app,
@@ -282,6 +290,8 @@ func Start(game *Game) {
 		squares: squares,
 		currentPlayer: currentPlayer,
 		currentPlayerStatus: currentPlayerStatus,
+		history: history,
+		redStatusColor: tcell.NewHexColor(0xFF0000),
 		greenBbgColor: tcell.NewHexColor(0x95B089),
 		beigeBgColor: tcell.NewHexColor(0xB5A16E),
 		whitePieceColor: tcell.NewHexColor(0xFFFFFF),
@@ -360,14 +370,14 @@ func Start(game *Game) {
 	})
 
 	currentPlayerStatus.SetBorder(true)
-	currentPlayerStatus.SetTitle("Player Status:")
+	currentPlayerStatus.SetTitle("Status:")
+	currentPlayerStatus.SetTextColor(state.redStatusColor)
 	currentPlayerStatus.SetTitleAlign(tview.AlignLeft)
 
 	currentPlayer.SetBorder(true)
 	currentPlayer.SetTitle("Current Player:")
 	currentPlayer.SetTitleAlign(tview.AlignLeft)
 
-	history := tview.NewTextView()
 	history.SetBorder(true)
 	history.SetTitle("History:")
 	history.SetTitleAlign(tview.AlignLeft)
@@ -433,7 +443,7 @@ func Start(game *Game) {
 			})
 		}()
 	})
-	
+
 	app.SetRoot(outer, true)
 	app.SetFocus(input)
 	if err := app.Run(); err != nil {

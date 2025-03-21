@@ -23,6 +23,47 @@ var colorName = map[Color]string{
 func (c Color) String() string {
     return colorName[c]
 }
+// Returns (x, y) movement relative to self
+func (c Color) Forward() (int, int) {
+	switch c {
+	case White:
+		return 0, 1
+	case Black:
+		return 0, -1
+	default:
+		return 0, 0
+	}
+}
+func (c Color) Backward() (int, int) {
+	switch c {
+	case White:
+		return 0, -1
+	case Black:
+		return 0, 1
+	default:
+		return 0, 0
+	}
+}
+func (c Color) Left() (int, int) {
+	switch c {
+	case White:
+		return -1, 0
+	case Black:
+		return 1, 0
+	default:
+		return 0, 0
+	}
+}
+func (c Color) Right() (int, int) {
+	switch c {
+	case White:
+		return 1, 0
+	case Black:
+		return -1, 0
+	default:
+		return 0, 0
+	}
+}
 
 type PieceType int
 const (
@@ -52,6 +93,21 @@ type Piece struct {
 }
 func (p Piece) String() string {
     return fmt.Sprintf("%v %v @ %v", p.color, p.pieceType, p.cc)
+}
+
+type SpecialMove int
+const (
+	None SpecialMove = iota
+	EnPassant
+	Castling
+)
+var specialMoveName = map[SpecialMove]string{
+	None: "n/a",
+    EnPassant: "en passant",
+    Castling: "castling",
+}
+func (sm SpecialMove) String() string {
+	return specialMoveName[sm]
 }
 
 type Coord string
@@ -91,12 +147,14 @@ func (cc CartesianCoord) String() string {
     return fmt.Sprintf("(%v,%v)", cc.X, cc.Y)
 }
 func (c CartesianCoord) IsValid() (isValid bool) {
-	if c.X >= 0 && c.Y >= 0 && c.X <= 7 && c.Y <= 7 { 
+	if c.X >= 0 && c.Y >= 0 && c.X <= 7 && c.Y <= 7 {
 		isValid = true
 	}
 	return
 }
-// Converts the CartesianCoord to a BitCoord. Assumes CartesianCoord is valid.
+func (cc CartesianCoord) AsCoord() Coord {
+	return Coord(fmt.Sprintf("%v%v", string(rune('a' + cc.X)), string(rune('1' + cc.Y))))
+}
 func (cc CartesianCoord) AsBitCoord() BitCoord {
 	return BitCoord(0b1 << (cc.X+(8*cc.Y)))
 }
@@ -149,7 +207,7 @@ func (bc BitCoord) To(x, y int) BitCoord {
 			result = result << (8*y)
 		}
 	}
-	
+
 	return result
 }
 
@@ -162,6 +220,7 @@ type ValidMove struct {
 	piece Piece
 	dest CartesianCoord
 	newBoard Board
+	specialMove SpecialMove
 }
 
 type Game struct {
@@ -210,14 +269,36 @@ func NewGame() *Game {
 		},
 		moves: make([]Move, 0),
 	}
-	game.validMoves = game.PrecomputeValidMoves()
+	game.validMoves = computeValidMoves(game.currentPlayer, game.board, game.moves, true)
 	return &game
 }
 
-func (g *Game) ExecuteValidMove(move ValidMove) bool {
+func getCheckThreats(color Color, b Board, gameMoves []Move) []Piece {
+	threats := make([]Piece, 0)
+	kingcc := BitCoord(b.players[color].pieces[King]).AsCartesianCoord()
+	for c := range Colors {
+		c := Color(c)
+		if color == c {
+			continue
+		}
+		moves := computeValidMoves(c, b, gameMoves, false)
+		for p, moves := range moves {
+			for _, m := range moves {
+				if m.dest == kingcc {
+					threats = append(threats, p)
+				}
+			}
+		}
+	}
+	return threats
+}
+
+// Mutates game state to match the chosen move to execute. Returns a human readable representation of the move that was
+// executed, and whether it was executed or not.
+func (g *Game) ExecuteValidMove(move ValidMove) (string, bool) {
 	moves, found := g.validMoves[move.piece]
 	if !found {
-		return false
+		return "", false
 	}
 	found = false
 	for _, m := range moves {
@@ -227,27 +308,57 @@ func (g *Game) ExecuteValidMove(move ValidMove) bool {
 		}
 	}
 	if !found {
-		return false
+		return "", false
 	}
 
 	g.moves = append(g.moves, Move{piece: move.piece, dest: move.dest})
+	notes := ""
+	if origPiece, found := GetCoord(move.dest, g.board); found {
+		notes = fmt.Sprintf(" [cap %v]", origPiece.pieceType)
+	} else if move.specialMove == EnPassant {
+		notes = fmt.Sprintf(" [%v cap %v]", move.specialMove, Pawn)
+	} else if move.specialMove != None {
+		notes = fmt.Sprintf(" [%v]", move.specialMove)
+	}
+	moveText := fmt.Sprintf("%v %v %v to %v%v", move.piece.color, move.piece.pieceType, move.piece.cc.AsCoord(), move.dest.AsCoord(), notes)
 	g.board = move.newBoard
-	g.currentPlayer = (g.currentPlayer + 1) % (Black + 1)
-	g.validMoves = g.PrecomputeValidMoves()
-	return true
+	g.currentPlayer = Color(int(g.currentPlayer + 1) % len(Colors))
+	threats := getCheckThreats(g.currentPlayer, g.board, g.moves)
+	g.validMoves = computeValidMoves(g.currentPlayer, g.board, g.moves, true)
+
+	inCheck, noMoves := false, true
+	if len(threats) > 0 {
+		inCheck = true
+	}
+	for _, pieceMoves := range g.validMoves {
+		if len(pieceMoves) > 0 {
+			noMoves = false
+			break
+		}
+	}
+	if inCheck && noMoves {
+		g.currentPlayerStatus = "CHECKMATE"
+	} else if inCheck {
+		g.currentPlayerStatus = "CHECK"
+	} else if noMoves {
+		g.currentPlayerStatus = "DRAW"
+	} else {
+		g.currentPlayerStatus = ""
+	}
+	return moveText, true
 }
 
 // Takes in a Coord and returns a (Piece, bool). The Coord arg points to a position on the board. The Piece return value
 // describes the piece located at the position specified (or a zero-valued Piece if there is no piece there). The bool
 // return value describes whether a piece is located at the position or not
-func (g *Game) GetCoord(cc CartesianCoord) (Piece, bool) {
+func GetCoord(cc CartesianCoord, b Board) (Piece, bool) {
 	if !cc.IsValid() {
 		return Piece{}, false
 	}
 	bit := uint64(cc.AsBitCoord())
 	for i := range [2]Color{White, Black} {
 		color := Color(i)
-		player := g.board.players[color]
+		player := b.players[color]
 		if bit & player.pieces[Pawn] != 0 {
 			return Piece{color, Pawn, cc}, true
 		} else if bit & player.pieces[Rook] != 0 {
@@ -265,12 +376,12 @@ func (g *Game) GetCoord(cc CartesianCoord) (Piece, bool) {
 	return Piece{}, false
 }
 
-func (g *Game) PrecomputeValidMoves() map[Piece][]ValidMove {
-	player := g.board.players[g.currentPlayer]
+func computeValidMoves(color Color, board Board, gameMoves []Move, removeIfIntoCheck bool) map[Piece][]ValidMove {
+	player := board.players[color]
 	moves := make(map[Piece][]ValidMove, 0)
 
 	// TODO: Instead of ranging over each piece on the board, it is more efficient to instead get the number of trailing
-	// zeroes of each non-zero bittable and use that to successively determine the position of each known piece.
+	// zeroes of each non-zero bit table and use that to successively determine the position of each piece/bit.
 	for y := range 8 {
 		for x := range 8 {
 			cc := CartesianCoord{x, y}
@@ -278,61 +389,78 @@ func (g *Game) PrecomputeValidMoves() map[Piece][]ValidMove {
 
 			switch  {
 			case bit & player.pieces[Pawn] != 0:
-				p := Piece{g.currentPlayer, Pawn, cc}
-				moves[p] = g.computeValidMovesForPawn(p)
+				p := Piece{color, Pawn, cc}
+				moves[p] = computeValidMovesForPawn(p, board, gameMoves)
 			case bit & player.pieces[Rook] != 0:
-				p := Piece{g.currentPlayer, Rook, cc}
-				moves[p] = g.computeValidMovesForRook(p)
+				p := Piece{color, Rook, cc}
+				moves[p] = computeValidMovesForRook(p, board)
 			case bit & player.pieces[Knight] != 0:
-				p := Piece{g.currentPlayer, Knight, cc}
-				moves[p] = g.computeValidMovesForKnight(p)
+				p := Piece{color, Knight, cc}
+				moves[p] = computeValidMovesForKnight(p, board)
 			case bit & player.pieces[Bishop] != 0:
-				p := Piece{g.currentPlayer, Bishop, cc}
-				moves[p] = g.computeValidMovesForBishop(p)
+				p := Piece{color, Bishop, cc}
+				moves[p] = computeValidMovesForBishop(p, board)
 			case bit & player.pieces[Queen] != 0:
-				p := Piece{g.currentPlayer, Queen, cc}
-				moves[p] = g.computeValidMovesForQueen(p)
+				p := Piece{color, Queen, cc}
+				moves[p] = computeValidMovesForQueen(p, board)
 			case bit & player.pieces[King] != 0:
-				p := Piece{g.currentPlayer, King, cc}
-				moves[p] = g.computeValidMovesForKing(p)
+				p := Piece{color, King, cc}
+				moves[p] = computeValidMovesForKing(p, board, gameMoves)
 			}
+		}
+	}
+	if removeIfIntoCheck {
+		for piece, pieceMoves := range moves {
+			n := 0
+			for _, move := range pieceMoves {
+				if len(getCheckThreats(color, move.newBoard, gameMoves)) == 0 {
+					pieceMoves[n] = move
+					n++
+				}
+			}
+			moves[piece] = pieceMoves[:n]
 		}
 	}
 	return moves
 }
 
-func (g *Game) hasPieceMoved(piece Piece) bool {
-		hasMoved := false
-		for _, move := range slices.Backward(g.moves) {
-			if move.piece.color == piece.color && move.dest == piece.cc {
-				hasMoved = true
-				break
-			}
+func hasPieceMoved(piece Piece, gameMoves []Move) bool {
+	return len(movesOfPiece(piece, gameMoves)) > 0
+}
+
+// Returns the Moves of the given piece taken in this game in reverse order.
+func movesOfPiece(piece Piece, gameMoves []Move) []Move {
+	moves := make([]Move, 0)
+	for _, m := range slices.Backward(gameMoves) {
+		if m.dest == piece.cc {
+			moves = append(moves, m)
+			piece = m.piece
 		}
-		return hasMoved
+	}
+	return moves
 }
 
 func (g *Game) GetValidMovesForPiece(p Piece) []ValidMove {
 	return g.validMoves[p]
 }
 
-func checkDirection (g *Game, p Piece, x int, y int, onlyOne bool, requiresCapture bool, requiresMove bool) []ValidMove {
+func checkDirection (p Piece, b Board, x int, y int, onlyOne bool, requiresCapture bool, requiresMove bool) (moves []ValidMove) {
 	pos := p.cc.AsBitCoord()
-	moves := make([]ValidMove, 0)
+	moves = make([]ValidMove, 0)
 	var next BitCoord = pos.To(x, y)
 	for {
 		if next == 0 {
 			// out of board, end this dir
 			break
 		}
-		destPiece, found := g.GetCoord(next.AsCartesianCoord())
+		destPiece, found := GetCoord(next.AsCartesianCoord(), b)
 		if !found  {
 			if !requiresCapture {
 				// no piece at target position; add move and continue
 				m := ValidMove{
 					piece: p,
 					dest: next.AsCartesianCoord(),
-					newBoard: g.board,
+					newBoard: b,
 				}
 				m.newBoard.players[p.color].pieces[p.pieceType] = m.newBoard.players[p.color].pieces[p.pieceType] &^ uint64(pos) | uint64(next)
 				moves = append(moves, m)
@@ -349,7 +477,7 @@ func checkDirection (g *Game, p Piece, x int, y int, onlyOne bool, requiresCaptu
 				m := ValidMove{
 					piece: p,
 					dest: next.AsCartesianCoord(),
-					newBoard: g.board,
+					newBoard: b,
 				}
 				m.newBoard.players[p.color].pieces[p.pieceType] = m.newBoard.players[p.color].pieces[p.pieceType] &^ uint64(pos) | uint64(next)
 				m.newBoard.players[destPiece.color].pieces[destPiece.pieceType] = m.newBoard.players[destPiece.color].pieces[destPiece.pieceType] &^ uint64(next)
@@ -359,84 +487,163 @@ func checkDirection (g *Game, p Piece, x int, y int, onlyOne bool, requiresCaptu
 		}
 		next = next.To(x, y)
 	}
-	return moves
+	return
 }
 
-func (g *Game) computeValidMovesForPawn(p Piece) []ValidMove {
-	// TODO: en passant
-	// TODO: promotion
-	moves := make([]ValidMove, 0)
-
-	switch p.color {
-	case White:
-		moves = append(moves, checkDirection(g, p, 0, 1, true, false, true)...)
-		if !g.hasPieceMoved(p) {
-			moves = append(moves, checkDirection(g, p, 0, 2, true, false, true)...)
+func checkEnPassant(p Piece, b Board, gameMoves []Move) (moves []ValidMove) {
+	moves = make([]ValidMove, 0)
+	pieceMoves := movesOfPiece(p, gameMoves)
+	if len(pieceMoves) != 3 {
+		// has not moved 3 times exactly
+		return
+	}
+	if slices.ContainsFunc(pieceMoves, func (m Move) bool {
+		delta := m.dest.Y - m.piece.cc.Y
+		if delta < 0 {
+			delta = 0 - delta
 		}
-		moves = append(moves, checkDirection(g, p, -1, 1, true, true, false)...)
-		moves = append(moves, checkDirection(g, p, 1, 1, true, true, false)...)
-	case Black:
-		moves = append(moves, checkDirection(g, p, 0, -1, true, false, true)...)
-		if !g.hasPieceMoved(p) {
-			moves = append(moves, checkDirection(g, p, 0, -2, true, false, true)...)
+		return delta > 1
+	}) {
+		// has moved 2 squares at once
+		return
+	}
+
+	lastMove := gameMoves[len(gameMoves)-1]
+	yDelta := lastMove.dest.Y - lastMove.piece.cc.Y
+	if yDelta < 0 {
+		yDelta = 0 - yDelta
+	}
+	if lastMove.piece.pieceType != Pawn || yDelta != 2 {
+		// the last moved piece was either not a pawn, or did not advance two squares at once
+		return
+	}
+
+	pos := p.cc.AsBitCoord()
+	lastMovePos := lastMove.dest.AsBitCoord()
+	left, right := pos.To(p.color.Left()), pos.To(p.color.Right())
+	if lastMovePos == left || lastMovePos == right {
+		dest := lastMove.dest.AsBitCoord().To(p.color.Forward())
+		m := ValidMove{
+			piece: p,
+			dest: dest.AsCartesianCoord(),
+			newBoard: b,
+			specialMove: EnPassant,
 		}
-		moves = append(moves, checkDirection(g, p, -1, -1, true, true, false)...)
-		moves = append(moves, checkDirection(g, p, 1, -1, true, true, false)...)
-	} 
+		m.newBoard.players[p.color].pieces[p.pieceType] = m.newBoard.players[p.color].pieces[p.pieceType] &^ uint64(pos) | uint64(dest)
+		m.newBoard.players[lastMove.piece.color].pieces[lastMove.piece.pieceType] = m.newBoard.players[lastMove.piece.color].pieces[lastMove.piece.pieceType] &^ uint64(lastMove.dest.AsBitCoord())
+		moves = append(moves, m)
+	}
+	return
+}
+
+func checkCastle(p Piece, b Board, gameMoves []Move, dirX int, dirY int) (moves []ValidMove) {
+	moves = make([]ValidMove, 0)
+	pieceMoves := movesOfPiece(p, gameMoves)
+	if len(pieceMoves) != 0 {
+		return
+	}
+
+	pos := p.cc.AsBitCoord()
+	var next BitCoord = pos.To(dirX, dirY)
+	for {
+		if next == 0 {
+			break
+		}
+		pairPiece, found := GetCoord(next.AsCartesianCoord(), b)
+		if found {
+			if pairPiece.pieceType == Rook && len(movesOfPiece(pairPiece, gameMoves)) == 0 {
+				pairPiecePos := pairPiece.cc.AsBitCoord()
+				pairPieceDest := p.cc.AsBitCoord().To(dirX, dirY)
+				dest := p.cc.AsBitCoord().To(dirX*2, dirY*2)
+				m := ValidMove{
+					piece: p,
+					dest: dest.AsCartesianCoord(),
+					newBoard: b,
+					specialMove: Castling,
+				}
+				m.newBoard.players[p.color].pieces[p.pieceType] = m.newBoard.players[p.color].pieces[p.pieceType] &^ uint64(pos) | uint64(dest)
+				m.newBoard.players[p.color].pieces[pairPiece.pieceType] = m.newBoard.players[p.color].pieces[pairPiece.pieceType] &^ uint64(pairPiecePos) | uint64(pairPieceDest)
+				moves = append(moves, m)
+			}
+			break
+		}
+		next = next.To(dirX, dirY)
+	}
 
 	return moves
 }
 
-func (g *Game) computeValidMovesForRook(p Piece) []ValidMove {
+func computeValidMovesForPawn(p Piece, b Board, gameMoves []Move) []ValidMove {
+	// TODO: Pawn promotion. Needs to change the ValidMove struct to allow for specifying the piece type to promote to,
+	// and updating the UI logic to allow for it.
 	moves := make([]ValidMove, 0)
-	moves = append(moves, checkDirection(g, p, 0, 1, false, false, false)...)
-	moves = append(moves, checkDirection(g, p, 0, -1, false, false, false)...)
-	moves = append(moves, checkDirection(g, p, 1, 0, false, false, false)...)
-	moves = append(moves, checkDirection(g, p, -1, 0, false, false, false)...)
+
+	forwardX, forwardY := p.color.Forward() // 0,1
+	leftX, leftY := p.color.Left() // -1,0
+	rightX, rightY := p.color.Right() // 1,0
+	moves = append(moves, checkDirection(p, b, forwardX, forwardY, true, false, true)...)
+	if !hasPieceMoved(p, gameMoves) {
+		moves = append(moves, checkDirection(p, b, forwardX*2, forwardY*2, true, false, true)...)
+	}
+	moves = append(moves, checkDirection(p, b, leftX+forwardX, leftY+forwardY, true, true, false)...)
+	moves = append(moves, checkDirection(p, b, rightX+forwardX, rightY+forwardY, true, true, false)...)
+	moves = append(moves, checkEnPassant(p, b, gameMoves)...)
 	return moves
 }
 
-func (g *Game) computeValidMovesForKnight(p Piece) []ValidMove {
+func computeValidMovesForRook(p Piece, b Board) []ValidMove {
 	moves := make([]ValidMove, 0)
-	moves = append(moves, checkDirection(g, p, 1, -2, true, false, false)...)
-	moves = append(moves, checkDirection(g, p, 1, 2, true, false, false)...)
-	moves = append(moves, checkDirection(g, p, 2, -1, true, false, false)...)
-	moves = append(moves, checkDirection(g, p, 2, 1, true, false, false)...)
-	moves = append(moves, checkDirection(g, p, -1, -2, true, false, false)...)
-	moves = append(moves, checkDirection(g, p, -1, 2, true, false, false)...)
-	moves = append(moves, checkDirection(g, p, -2, -1, true, false, false)...)
-	moves = append(moves, checkDirection(g, p, -2, 1, true, false, false)...)
+	moves = append(moves, checkDirection(p, b, 0, 1, false, false, false)...)
+	moves = append(moves, checkDirection(p, b, 0, -1, false, false, false)...)
+	moves = append(moves, checkDirection(p, b, 1, 0, false, false, false)...)
+	moves = append(moves, checkDirection(p, b, -1, 0, false, false, false)...)
 	return moves
 }
 
-func (g *Game) computeValidMovesForBishop(p Piece) []ValidMove {
+func computeValidMovesForKnight(p Piece, b Board) []ValidMove {
 	moves := make([]ValidMove, 0)
-	moves = append(moves, checkDirection(g, p, 1, 1, false, false, false)...)
-	moves = append(moves, checkDirection(g, p, 1, -1, false, false, false)...)
-	moves = append(moves, checkDirection(g, p, -1, 1, false, false, false)...)
-	moves = append(moves, checkDirection(g, p, -1, -1, false, false, false)...)
+	moves = append(moves, checkDirection(p, b, 1, -2, true, false, false)...)
+	moves = append(moves, checkDirection(p, b, 1, 2, true, false, false)...)
+	moves = append(moves, checkDirection(p, b, 2, -1, true, false, false)...)
+	moves = append(moves, checkDirection(p, b, 2, 1, true, false, false)...)
+	moves = append(moves, checkDirection(p, b, -1, -2, true, false, false)...)
+	moves = append(moves, checkDirection(p, b, -1, 2, true, false, false)...)
+	moves = append(moves, checkDirection(p, b, -2, -1, true, false, false)...)
+	moves = append(moves, checkDirection(p, b, -2, 1, true, false, false)...)
 	return moves
 }
 
-func (g *Game) computeValidMovesForQueen(p Piece) []ValidMove {
+func computeValidMovesForBishop(p Piece, b Board) []ValidMove {
 	moves := make([]ValidMove, 0)
-	moves = append(moves, checkDirection(g, p, 0, 1, false, false, false)...)
-	moves = append(moves, checkDirection(g, p, 0, -1, false, false, false)...)
-	moves = append(moves, checkDirection(g, p, 1, 0, false, false, false)...)
-	moves = append(moves, checkDirection(g, p, -1, 0, false, false, false)...)
-	moves = append(moves, checkDirection(g, p, 1, 1, false, false, false)...)
-	moves = append(moves, checkDirection(g, p, 1, -1, false, false, false)...)
-	moves = append(moves, checkDirection(g, p, -1, 1, false, false, false)...)
-	moves = append(moves, checkDirection(g, p, -1, -1, false, false, false)...)
+	moves = append(moves, checkDirection(p, b, 1, 1, false, false, false)...)
+	moves = append(moves, checkDirection(p, b, 1, -1, false, false, false)...)
+	moves = append(moves, checkDirection(p, b, -1, 1, false, false, false)...)
+	moves = append(moves, checkDirection(p, b, -1, -1, false, false, false)...)
 	return moves
 }
 
-func (g *Game) computeValidMovesForKing(p Piece) []ValidMove {
-	// TODO: Castling
+func computeValidMovesForQueen(p Piece, b Board) []ValidMove {
 	moves := make([]ValidMove, 0)
-	moves = append(moves, checkDirection(g, p, 1, 0, true, false, false)...)
-	moves = append(moves, checkDirection(g, p, -1, 0, true, false, false)...)
-	moves = append(moves, checkDirection(g, p, 0, 1, true, false, false)...)
-	moves = append(moves, checkDirection(g, p, 0, -1, true, false, false)...)
+	moves = append(moves, checkDirection(p, b, 0, 1, false, false, false)...)
+	moves = append(moves, checkDirection(p, b, 0, -1, false, false, false)...)
+	moves = append(moves, checkDirection(p, b, 1, 0, false, false, false)...)
+	moves = append(moves, checkDirection(p, b, -1, 0, false, false, false)...)
+	moves = append(moves, checkDirection(p, b, 1, 1, false, false, false)...)
+	moves = append(moves, checkDirection(p, b, 1, -1, false, false, false)...)
+	moves = append(moves, checkDirection(p, b, -1, 1, false, false, false)...)
+	moves = append(moves, checkDirection(p, b, -1, -1, false, false, false)...)
+	return moves
+}
+
+func computeValidMovesForKing(p Piece, b Board, gameMoves []Move) []ValidMove {
+	moves := make([]ValidMove, 0)
+	moves = append(moves, checkDirection(p, b, 1, 0, true, false, false)...)
+	moves = append(moves, checkDirection(p, b, -1, 0, true, false, false)...)
+	moves = append(moves, checkDirection(p, b, 0, 1, true, false, false)...)
+	moves = append(moves, checkDirection(p, b, 0, -1, true, false, false)...)
+	leftX, leftY := p.color.Left()
+	rightX, rightY := p.color.Right()
+	moves = append(moves, checkCastle(p, b, gameMoves, leftX, leftY)...)
+	moves = append(moves, checkCastle(p, b, gameMoves, rightX, rightY)...)
 	return moves
 }

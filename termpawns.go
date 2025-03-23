@@ -1,6 +1,32 @@
 package main
 
 const (
+	threebythreePawn =
+`   
+ p 
+   `
+	threebythreeRook =
+`   
+ R 
+   `
+	threebythreeKnight =
+`   
+ N 
+   `
+	threebythreeBishop =
+`   
+ B 
+   `
+	threebythreeQueen =
+`   
+ Q 
+   `
+	threebythreeKing =
+`   
+ K 
+   `
+
+
 	sixbysixPawn   =
 `      
       
@@ -216,10 +242,23 @@ func generatePieceSets() []*PieceSet {
 			sixbysixKing,
 		},
 	}
+	threebythreePieces := PieceSet{
+		minX: 3,
+		minY: 3,
+		pieces: []string{
+			threebythreePawn,
+			threebythreeRook,
+			threebythreeKnight,
+			threebythreeBishop,
+			threebythreeQueen,
+			threebythreeKing,
+		},
+	}
 
 	return []*PieceSet{
 		&elevenbytenPieces,
 		&sevenbyninePieces,
 		&sixbysixPieces,
+		&threebythreePieces,
 	}
 }
